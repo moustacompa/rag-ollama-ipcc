@@ -1,0 +1,226 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.5cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{listings}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    urlcolor=blue
+}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    columns=fullflexible,
+    backgroundcolor=\color{gray!5}
+}
+
+\title{Report for a Local RAG System on IPCC Reports}
+\author{COMPAORE Moustapha\\\href{mailto:compaore.moustapha@ine.inpt.ac.ma}{compaore.moustapha@ine.inpt.ac.ma}}
+\date{April 2026}
+
+\begin{document}
+
+\maketitle
+
+\section{Overview}
+
+This report describes the design choices made for a local Retrieval-Augmented Generation (RAG) application over IPCC PDF reports. The system uses a FastAPI backend, a Streamlit frontend, a Chroma vector database, Ollama embeddings, and a local Ollama chat model. The goal is to answer user questions using retrieved excerpts from the IPCC documents rather than relying only on the language model's parametric knowledge.
+
+\section{System Pipeline}
+
+The application follows a standard RAG pipeline:
+
+\begin{enumerate}[label=\arabic*.]
+    \item PDF files are stored in the \texttt{data/} directory.
+    \item \texttt{ingest.py} extracts text from each PDF using \texttt{PyPDF2}.
+    \item Extracted text is split into overlapping chunks and saved as JSON files in \texttt{chunks/}.
+    \item \texttt{embeddings.py} embeds these chunks using Ollama's \texttt{nomic-embed-text:latest} model.
+    \item The embedded chunks are stored in a persistent Chroma database under \texttt{vectordb/}.
+    \item At query time, the FastAPI backend retrieves relevant chunks and sends them to \texttt{llama3.2:1b} through a prompt template.
+    \item Streamlit sends user questions to the backend and displays the answer and source metadata.
+\end{enumerate}
+
+\section{Design Choices}
+
+\subsection{Chunk Size and Overlap}
+
+The ingestion script uses a chunk size of 1000 characters with an overlap of 200 characters:
+
+\begin{lstlisting}[language=Python]
+def split_text(text, chunk_size=1000, chunk_overlap=200):
+\end{lstlisting}
+
+This choice balances retrieval precision and context preservation. A chunk of 1000 characters is small enough to keep retrieved passages focused, while still large enough to contain complete sentences or short paragraphs. The 200-character overlap reduces the risk of losing meaning at chunk boundaries, especially for technical reports where a definition, conclusion, or qualifier may span two adjacent chunks.
+
+A smaller chunk size would improve precision but could fragment important evidence. A much larger chunk size would provide more context but may reduce retrieval accuracy and increase prompt length. The selected setting is therefore a practical compromise for a lightweight local RAG system.
+
+\subsection{Embedding Model}
+
+The system uses \texttt{nomic-embed-text:latest} through \texttt{OllamaEmbeddings}:
+
+\begin{lstlisting}[language=Python]
+embedding_fn = OllamaEmbeddings(model="nomic-embed-text:latest")
+\end{lstlisting}
+
+This model was selected because it is lightweight, local, and designed for text embedding tasks. Running embeddings locally avoids external API calls and keeps the system usable offline once the model is installed. It also fits the educational goal of building a fully local RAG application.
+
+The tradeoff is that it may be less accurate than larger commercial embedding models on highly specialized scientific language. However, for a local IPCC demo, it provides a good balance between speed, accessibility, and retrieval quality.
+
+\subsection{Retriever Parameters}
+
+The backend uses Chroma as a vector store and configures the retriever with Maximal Marginal Relevance (MMR):
+
+\begin{lstlisting}[language=Python]
+retriever = vectordb.as_retriever(
+    search_type="mmr",
+    search_kwargs={"k": 5, "fetch_k": 12}
+)
+\end{lstlisting}
+
+MMR was chosen instead of plain similarity search to reduce redundancy among retrieved chunks. This matters for IPCC reports because similar statements may appear in multiple sections. With MMR, the retriever first considers 12 candidate chunks and then returns 5 that balance relevance and diversity.
+
+The value \texttt{k=5} gives the language model enough evidence to answer broader questions, while \texttt{fetch\_k=12} gives MMR a wider candidate pool. This configuration was adopted after observing too many ``I do not know'' answers when only two chunks were retrieved.
+
+\subsection{Generation Model}
+
+The backend uses \texttt{llama3.2:1b}:
+
+\begin{lstlisting}[language=Python]
+llm = ChatOllama(model="llama3.2:1b", temperature=0.0, num_predict=300)
+\end{lstlisting}
+
+This model was selected because it is small enough to run locally with lower latency than larger models such as \texttt{llama3.1:latest}. The temperature is set to 0.0 to make answers more deterministic and reduce hallucination. The \texttt{num\_predict=300} parameter limits answer length, which helps avoid slow responses and Streamlit timeouts.
+
+\subsection{Prompt Strategy}
+
+The prompt asks the model to answer only from the provided context, but not to refuse too aggressively:
+
+\begin{lstlisting}
+Use only the context below, but be helpful: if the context gives partial evidence,
+answer with that evidence instead of saying you do not know.
+\end{lstlisting}
+
+This prompt was chosen because the initial version produced too many ``I don't know'' answers. The revised prompt keeps the answer grounded in retrieved documents while allowing partial answers when the retrieved context contains useful evidence.
+
+\section{Example Queries and Model Outputs}
+
+The following examples were generated through the running FastAPI endpoint using the current RAG configuration.
+
+\subsection{Example 1: Causes of Climate Change}
+
+\textbf{Query:}
+\begin{lstlisting}
+What are the main causes of recent climate change?
+\end{lstlisting}
+
+\textbf{Model output:}
+\begin{lstlisting}
+The main driver of recent climate change is human influence on the climate system. According to the report, human activities such as emissions of greenhouse gases have caused global warming and are already affecting many weather and climate extremes in every region across the globe.
+
+Additionally, the report mentions that human-induced climate change has contributed to increases in heavy precipitation events, agricultural and ecological droughts, and sea level rise, among other impacts.
+\end{lstlisting}
+
+\textbf{Retrieved sources:}
+\begin{itemize}
+    \item \texttt{data/WGI\_SPM.pdf}, page 8, chunk 4
+    \item \texttt{data/AR6\_SYR\_FullVolume.pdf}, page 58, chunk 0
+    \item \texttt{data/AR6\_SYR\_FullVolume.pdf}, page 62, chunk 4
+\end{itemize}
+
+\textbf{Evaluation:} The answer is relevant and well grounded. It correctly identifies human influence and greenhouse gas emissions as the main cause of recent warming. It also connects the retrieved evidence to observed climate extremes. The answer is concise and does not overclaim beyond the retrieved context.
+
+\subsection{Example 2: Food and Water Security}
+
+\textbf{Query:}
+\begin{lstlisting}
+What are the projected impacts of climate change on food and water security?
+\end{lstlisting}
+
+\textbf{Model output:}
+\begin{lstlisting}
+According to the context, climate change has reduced food security and affected water security, hindering efforts to meet Sustainable Development Goals (high confidence). Although overall agricultural productivity has increased, climate change has slowed this growth over the past 50 years globally (medium confidence), with related negative impacts mainly in mid- and low latitude regions but positive impacts in some high latitude regions (high confidence). Ocean warming and ocean acidification have adversely affected food production from fisheries and shellfish aquaculture in some oceanic regions (high confidence). Roughly half of the world's population currently experience severe water scarcity for at least part of the year due to a combination of climatic and non-climatic drivers (medium confidence).
+\end{lstlisting}
+
+\textbf{Retrieved sources:}
+\begin{itemize}
+    \item \texttt{data/AR6\_SYR\_FullVolume.pdf}, page 22, chunk 0
+    \item \texttt{data/AR6\_SYR\_FullVolume.pdf}, page 34, chunk 4
+    \item \texttt{data/AR6\_SYR\_FullVolume.pdf}, page 67, chunk 2
+\end{itemize}
+
+\textbf{Evaluation:} The response is mostly relevant and includes useful confidence qualifiers. It covers agricultural productivity, fisheries, aquaculture, and water scarcity. However, the generated answer was somewhat long and included extra continuation text in the raw output. This suggests that the generation limit and prompt could be further tuned for stricter answer boundaries.
+
+\subsection{Example 3: Mitigation Options}
+
+\textbf{Query:}
+\begin{lstlisting}
+What mitigation options are highlighted by the IPCC?
+\end{lstlisting}
+
+\textbf{Model output:}
+\begin{lstlisting}
+The IPCC report highlights several mitigation options, including:
+
+1. Forest-based adaptation
+2. Agroforestry
+3. Biodiversity management and ecosystem connectivity
+4. Improved cropland management
+5. Efficient livestock management
+6. Water use efficiency and water resource management
+7. Coastal defence and hardening
+8. Integrated coastal zone management
+9. Sustainable aquaculture and fisheries
+\end{lstlisting}
+
+\textbf{Retrieved sources:}
+\begin{itemize}
+    \item \texttt{data/AR6\_SYR\_FullVolume.pdf}, page 124, chunk 0
+    \item \texttt{data/AR6\_SYR\_FullVolume.pdf}, page 140, chunk 3
+    \item \texttt{data/AR6\_SYR\_FullVolume.pdf}, page 182, chunk 5
+\end{itemize}
+
+\textbf{Evaluation:} The output is partially useful but imperfect. Some listed items are adaptation measures rather than mitigation measures, which indicates that the retriever returned mixed adaptation and mitigation context. This is a retrieval-quality issue rather than only a generation issue. A better approach would be to improve metadata filtering, increase document coverage, or use a stronger model for classification between mitigation and adaptation.
+
+\section{Summary Evaluation}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{p{0.27\linewidth}p{0.18\linewidth}p{0.18\linewidth}p{0.27\linewidth}}
+\toprule
+Query & Relevance & Grounding & Main limitation \\
+\midrule
+Causes of climate change & High & High & None significant \\
+Food and water security & High & Medium--High & Answer can become too verbose \\
+Mitigation options & Medium & Medium & Retrieval mixed adaptation and mitigation evidence \\
+\bottomrule
+\end{tabular}
+\caption{Qualitative evaluation of three RAG outputs.}
+\end{table}
+
+\section{Recommendations}
+
+To further improve answer quality, the following changes are recommended:
+
+\begin{itemize}
+    \item Add document-level metadata such as report name, section, and topic to support filtered retrieval.
+    \item Use a stronger local model, such as a larger Llama variant, when hardware allows it.
+    \item Tune chunk size experimentally, for example comparing 800, 1000, and 1500 characters.
+    \item Add an evaluation set of expected questions and reference answers.
+    \item Consider reranking retrieved chunks before generation to improve evidence quality.
+\end{itemize}
+
+\section{Conclusion}
+
+The implemented RAG system demonstrates a functional local pipeline for querying IPCC reports. The current design favors simplicity, local execution, and reasonable latency. The selected chunking strategy, embedding model, and MMR retriever provide a practical baseline. The examples show that the system can produce grounded answers for factual climate questions, though retrieval quality remains the main factor limiting answer precision for broad or ambiguous questions.
+
+\end{document}
