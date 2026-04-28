@@ -3,6 +3,17 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# report files
+rag_design_report.aux
+rag_design_report.log
+rag_design_report.out
+rag_design_report.pdf
+rag_design_report.synctex.gz
+rag_design_report.tex
+
+#notebook
+rag_ollama_ipcc.ipynb
+
 # C extensions
 *.so
 
@@ -181,10 +192,3 @@ cython_debug/
 .cursorindexingignore
 .venv
 __pycache__
-rag_design_report.aux
-rag_design_report.log
-rag_design_report.out
-rag_design_report.pdf
-rag_design_report.synctex.gz
-rag_design_report.tex
-rag_ollama_ipcc.ipynb
