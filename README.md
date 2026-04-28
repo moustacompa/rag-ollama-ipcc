@@ -54,13 +54,13 @@ If `ollama` is not available in your PATH on Windows, use:
 From the project folder:
 
 ```powershell
-cd "F:\INPT\INE2\S4\P2\DeepLearning\rag-ollama-ipcc"
+cd ".\rag-ollama-ipcc"
 python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-If you already use the shared environment at `F:\INPT\python-venv\deeplearning`, activate or call that Python directly instead.
+If you already use a shared environment, activate or call that Python directly instead.
 
 ## Data Preparation
 
