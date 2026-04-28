@@ -179,3 +179,7 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+.venv
+__pycache__
+rag_design_report.*
+rag_ollama_ipcc.ipynb
